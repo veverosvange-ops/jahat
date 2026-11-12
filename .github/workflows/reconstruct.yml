@@ -8,38 +8,63 @@ permissions:
   contents: read
 
 jobs:
-  reconstruct:
+  decompile:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
-      - name: Install dependencies
+      - name: Install utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip file binutils
+          sudo apt-get install -y wget unzip file llvm
+
+      - name: Check input binary
+        run: |
+          if [ ! -f COUNTERFLAME.dylib ]; then
+            echo "::error::COUNTERFLAME.dylib not found!"
+            exit 1
+          fi
+
+          mkdir -p output/functions
+          mkdir -p project
+
+          file COUNTERFLAME.dylib | tee output/binary-info.txt
+
+          strings -a -n 3 COUNTERFLAME.dylib \
+            > output/strings.txt
+
+          llvm-nm --format=posix COUNTERFLAME.dylib \
+            > output/symbols.txt 2>output/symbols-errors.txt || true
+
+          llvm-objdump --macho --disassemble COUNTERFLAME.dylib \
+            > output/assembly.txt 2>output/assembly-errors.txt || true
 
       - name: Download Ghidra
         run: |
-          wget -q https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip
-          unzip -q ghidra_11.3.2_PUBLIC_20250415.zip
-          mv ghidra_11.3.2_PUBLIC ghidra
+          GHIDRA_VERSION="11.3.2"
+          GHIDRA_BUILD="20250415"
+          GHIDRA_ZIP="ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD}.zip"
 
-      - name: Prepare output
-        run: |
-          mkdir -p output/functions
-          file COUNTERFLAME.dylib > output/binary-info.txt
-          strings -a COUNTERFLAME.dylib > output/strings.txt
-          nm -a COUNTERFLAME.dylib > output/symbols.txt 2>&1 || true
+          wget -q \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_ZIP}"
 
-      - name: Decompile binary
+          unzip -q "$GHIDRA_ZIP"
+          mv "ghidra_${GHIDRA_VERSION}_PUBLIC" ghidra
+
+      - name: Decompile functions
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/project"
+          mkdir -p "$GITHUB_WORKSPACE/output/functions"
+
           ghidra/support/analyzeHeadless \
             "$GITHUB_WORKSPACE/project" \
             Counterflame \
@@ -48,6 +73,22 @@ jobs:
             -scriptPath "$GITHUB_WORKSPACE/scripts" \
             -postScript ExportFunctions.java "$GITHUB_WORKSPACE/output"
 
+      - name: Create analysis report
+        if: always()
+        run: |
+          mkdir -p output
+
+          {
+            echo "COUNTERFLAME ANALYSIS"
+            echo "====================="
+            echo ""
+            echo "Binary information:"
+            cat output/binary-info.txt 2>/dev/null || true
+            echo ""
+            echo "Generated files:"
+            find output -type f -printf '%P\n' | sort
+          } > output/README-analysis.txt
+
       - name: Upload reconstructed source
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,4 +96,4 @@ jobs:
           name: COUNTERFLAME-RECONSTRUCTED-SOURCE
           path: output/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
