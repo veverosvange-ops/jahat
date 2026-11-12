@@ -1,0 +1,58 @@
+
+name: Reconstruct COUNTERFLAME
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip file binutils
+
+      - name: Download Ghidra
+        run: |
+          wget -q https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip
+          unzip -q ghidra_11.3.2_PUBLIC_20250415.zip
+          mv ghidra_11.3.2_PUBLIC ghidra
+
+      - name: Prepare output
+        run: |
+          mkdir -p output/functions
+          file COUNTERFLAME.dylib > output/binary-info.txt
+          strings -a COUNTERFLAME.dylib > output/strings.txt
+          nm -a COUNTERFLAME.dylib > output/symbols.txt 2>&1 || true
+
+      - name: Decompile binary
+        run: |
+          ghidra/support/analyzeHeadless \
+            "$GITHUB_WORKSPACE/project" \
+            Counterflame \
+            -import "$GITHUB_WORKSPACE/COUNTERFLAME.dylib" \
+            -overwrite \
+            -scriptPath "$GITHUB_WORKSPACE/scripts" \
+            -postScript ExportFunctions.java "$GITHUB_WORKSPACE/output"
+
+      - name: Upload reconstructed source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: COUNTERFLAME-RECONSTRUCTED-SOURCE
+          path: output/
+          if-no-files-found: warn
+          retention-days: 7
